@@ -9,9 +9,12 @@ import json
 from urllib.parse import urlparse, parse_qs
 
 app = Flask(__name__)
+
+# Production-ready CORS configuration
+FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://localhost:3000')
 CORS(app, resources={
     r"/*": {
-        "origins": ["http://localhost:3000"],
+        "origins": [FRONTEND_URL, "http://localhost:3000"],
         "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
         "allow_headers": ["Content-Type", "Authorization"]
     }
@@ -1176,5 +1179,18 @@ def what_happened():
             "what_happened": "Unable to retrieve scene information at this time."
         })
 
+# Health check endpoint for deployment
+@app.route('/health', methods=['GET'])
+def health_check():
+    """Health check endpoint for deployment platforms"""
+    return jsonify({
+        "status": "healthy",
+        "message": "Klarity API is running",
+        "gemini_configured": bool(GEMINI_API_KEY)
+    }), 200
+
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    # Use environment variables for production deployment
+    port = int(os.environ.get('PORT', 5000))
+    debug = os.environ.get('FLASK_ENV') != 'production'
+    app.run(debug=debug, host='0.0.0.0', port=port)
