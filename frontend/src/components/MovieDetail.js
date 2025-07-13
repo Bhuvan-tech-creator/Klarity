@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
+import { API_ENDPOINTS } from '../config/api';
 
 const MovieDetail = () => {
   const { movieId } = useParams();
@@ -19,10 +20,10 @@ const MovieDetail = () => {
       setLoading(true);
       setError(null);
       
-      const response = await fetch(`http://localhost:5000/get_movie_details/${movieId}`);
+      const response = await fetch(`${API_ENDPOINTS.GET_MOVIE_DETAILS}/${movieId}`);
       
       if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+        throw new Error('Failed to fetch movie details');
       }
 
       const data = await response.json();

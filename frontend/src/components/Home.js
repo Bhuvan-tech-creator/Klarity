@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { API_ENDPOINTS } from '../config/api';
 
 // Extract YouTube video ID from URL
 const getYouTubeVideoId = (url) => {
@@ -226,7 +227,7 @@ const Home = () => {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 10000);
       
-      const response = await fetch('http://localhost:5000/get_history?user_id=default_user', {
+      const response = await fetch(`${API_ENDPOINTS.GET_HISTORY}?user_id=default_user`, {
         method: 'GET',
         headers: {
           'Content-Type': 'application/json',
@@ -276,7 +277,7 @@ const Home = () => {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
       
-      const response = await fetch('http://localhost:5000/process_video', {
+      const response = await fetch(API_ENDPOINTS.PROCESS_VIDEO, {
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',
@@ -311,7 +312,7 @@ const Home = () => {
       if (error.name === 'AbortError') {
         alert('Request timed out. Please try again.');
       } else if (error.message.includes('Failed to fetch')) {
-        alert('Cannot connect to server. Please ensure the backend is running on http://localhost:5000');
+        alert('Cannot connect to server. Please ensure the backend is running.');
       } else {
         alert('Error connecting to backend: ' + error.message);
       }
@@ -340,7 +341,7 @@ const Home = () => {
     
     // Send click data to backend to update complexity score
     try {
-      const response = await fetch('http://localhost:5000/update_clicks', {
+      const response = await fetch(API_ENDPOINTS.UPDATE_CLICKS, {
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',

@@ -9,6 +9,8 @@ import json
 from urllib.parse import urlparse, parse_qs
 
 app = Flask(__name__)
+CORS(app, origins=["https://klarity-frontend.vercel.app"], supports_credentials=True)
+
 CORS(app, resources={
     r"/*": {
         "origins": ["http://localhost:3000"],
