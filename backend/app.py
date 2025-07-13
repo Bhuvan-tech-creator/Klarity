@@ -887,7 +887,7 @@ def process_video():
                             scene_end = scene.get('scene_end', 0)
                             scene_title = scene.get('scene_title', 'Scene')
                             what_happened = scene.get('what_happened', 'Scene information not available')
-                            
+
                             cursor.execute("""
                                 INSERT INTO video_scenes (video_id, scene_start, scene_end, what_happened, scene_title)
                                 VALUES (?, ?, ?, ?, ?)
