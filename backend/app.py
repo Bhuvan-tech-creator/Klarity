@@ -16,7 +16,12 @@ app = Flask(__name__)
 FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://localhost:3000')
 CORS(app, resources={
     r"/*": {
-        "origins": [FRONTEND_URL, "http://localhost:3000"],
+        "origins": [
+            FRONTEND_URL, 
+            "http://localhost:3000",
+            "https://klarity-jaox27l25-bhuvans-projects-898cf3d2.vercel.app",
+            "https://klarity*.vercel.app"
+        ],
         "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
         "allow_headers": ["Content-Type", "Authorization"]
     }
