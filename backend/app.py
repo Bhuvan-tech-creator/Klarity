@@ -7,24 +7,11 @@ import os
 import sqlite3
 import json
 from urllib.parse import urlparse, parse_qs
-import bcrypt
-import datetime
-import yt_dlp
-import tempfile
-import subprocess
 
 app = Flask(__name__)
-
-# Production-ready CORS configuration
-FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://localhost:3000')
 CORS(app, resources={
     r"/*": {
-        "origins": [
-            FRONTEND_URL, 
-            "http://localhost:3000",
-            "https://klarity-jaox27l25-bhuvans-projects-898cf3d2.vercel.app",
-            "https://klarity*.vercel.app"
-        ],
+        "origins": ["http://localhost:3000"],
         "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
         "allow_headers": ["Content-Type", "Authorization"]
     }
@@ -161,17 +148,6 @@ def init_db():
     conn = sqlite3.connect("cache.db")
     cursor = conn.cursor()
     
-    # Create users table for authentication
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE NOT NULL,
-            password_hash TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            last_login TIMESTAMP
-        )
-    """)
-    
     # Create user_complexity table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS user_complexity (
@@ -258,87 +234,6 @@ def init_db():
 
 init_db()
 
-# Authentication helper functions
-def hash_password(password):
-    """Hash a password using bcrypt"""
-    return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
-
-def verify_password(password, hashed):
-    """Verify a password against its hash"""
-    return bcrypt.checkpw(password.encode('utf-8'), hashed)
-
-def create_user(username, password):
-    """Create a new user account"""
-    conn = sqlite3.connect("cache.db")
-    cursor = conn.cursor()
-    
-    try:
-        # Check if username already exists
-        cursor.execute("SELECT id FROM users WHERE username = ?", (username,))
-        if cursor.fetchone():
-            conn.close()
-            return False, "Username already exists"
-        
-        # Hash the password
-        password_hash = hash_password(password)
-        
-        # Insert new user
-        cursor.execute("""
-            INSERT INTO users (username, password_hash) 
-            VALUES (?, ?)
-        """, (username, password_hash))
-        
-        user_id = cursor.lastrowid
-        
-        # Initialize user complexity score
-        cursor.execute("""
-            INSERT INTO user_complexity (user_id, clicks, complexity_score) 
-            VALUES (?, 0, 1.0)
-        """, (str(user_id),))
-        
-        conn.commit()
-        conn.close()
-        return True, user_id
-    
-    except Exception as e:
-        conn.close()
-        return False, str(e)
-
-def authenticate_user(username, password):
-    """Authenticate a user and return user info"""
-    conn = sqlite3.connect("cache.db")
-    cursor = conn.cursor()
-    
-    try:
-        # Get user data
-        cursor.execute("SELECT id, username, password_hash FROM users WHERE username = ?", (username,))
-        user = cursor.fetchone()
-        
-        if not user:
-            conn.close()
-            return False, "User not found"
-        
-        user_id, username, password_hash = user
-        
-        # Verify password
-        if verify_password(password, password_hash):
-            # Update last login
-            cursor.execute("UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = ?", (user_id,))
-            conn.commit()
-            conn.close()
-            
-            return True, {
-                "id": user_id,
-                "username": username
-            }
-        else:
-            conn.close()
-            return False, "Invalid password"
-    
-    except Exception as e:
-        conn.close()
-        return False, str(e)
-
 def get_youtube_video_title(video_id):
     """Fetch video title from YouTube with caching and fallback"""
     try:
@@ -416,118 +311,6 @@ def get_youtube_video_title(video_id):
         print(f"Error in get_youtube_video_title for {video_id}: {str(e)}")
         return f"Video {video_id[:8]}"
 
-def generate_content_from_title(video_title, video_id):
-    """Generate intelligent content based on video title when transcript isn't available"""
-    print(f"Generating content from title: {video_title}")
-    
-    # Analyze title for content type and themes
-    title_lower = video_title.lower()
-    
-    # Determine content type
-    if any(word in title_lower for word in ['student', 'school', 'teacher', 'class', 'homework', 'exam', 'grade']):
-        content_type = "educational"
-        themes = ["Learning", "Education", "School Life"]
-    elif any(word in title_lower for word in ['funny', 'comedy', 'hilarious', 'laugh', 'joke', 'humor']):
-        content_type = "comedy"
-        themes = ["Humor", "Entertainment", "Fun"]
-    elif any(word in title_lower for word in ['tutorial', 'how to', 'guide', 'learn', 'tips']):
-        content_type = "tutorial"
-        themes = ["Learning", "Tutorial", "Skills"]
-    elif any(word in title_lower for word in ['vs', 'versus', 'challenge', 'competition', 'battle']):
-        content_type = "competition"
-        themes = ["Competition", "Challenge", "Comparison"]
-    elif any(word in title_lower for word in ['review', 'reaction', 'opinion', 'thoughts']):
-        content_type = "review"
-        themes = ["Analysis", "Opinion", "Review"]
-    else:
-        content_type = "general"
-        themes = ["Content", "Entertainment", "Information"]
-    
-    # Generate intelligent briefing based on title
-    briefing = f"This video titled '{video_title}' appears to be {content_type} content. "
-    
-    if content_type == "educational":
-        briefing += "The video likely covers school-related topics, student experiences, or educational content. You can expect to learn about different perspectives on education, student life, or teaching methods."
-    elif content_type == "comedy":
-        briefing += "This appears to be comedic content designed to entertain. Expect humor, funny situations, and light-hearted content that aims to make you laugh."
-    elif content_type == "tutorial":
-        briefing += "This looks like instructional content that will teach you something new. Pay attention to the steps and practical information provided."
-    elif content_type == "competition":
-        briefing += "This video features some kind of competition or comparison. You'll likely see different sides competing or being compared against each other."
-    elif content_type == "review":
-        briefing += "This appears to be analytical content where someone shares their thoughts or reviews something. Expect opinions and detailed analysis."
-    else:
-        briefing += "This video contains interesting content worth watching. While we couldn't analyze the full transcript, the title suggests engaging material."
-    
-    # Generate theme alerts based on content type
-    theme_alerts = []
-    for i, theme in enumerate(themes[:3]):  # Max 3 themes
-        theme_alerts.append({
-            "timestamp": 30 + (i * 45),
-            "theme": theme,
-            "emotion": "Positive" if content_type in ["comedy", "tutorial"] else "Informative",
-            "description": f"Key {theme.lower()} content is being presented"
-        })
-    
-    # Generate intelligent recaps
-    recaps = [
-        {
-            "timestamp_start": 0,
-            "timestamp_end": 120,
-            "summary": f"The video begins with an introduction to the main topic: {video_title}. Initial context and setup are provided."
-        },
-        {
-            "timestamp_start": 120,
-            "timestamp_end": 300,
-            "summary": f"The main content develops, focusing on the core theme of {themes[0].lower()} with detailed explanations and examples."
-        }
-    ]
-    
-    # Add more specific recaps based on content type
-    if content_type == "competition":
-        recaps.append({
-            "timestamp_start": 300,
-            "timestamp_end": 480,
-            "summary": "The competition heats up with different sides presenting their best efforts and key moments emerge."
-        })
-    elif content_type == "educational":
-        recaps.append({
-            "timestamp_start": 300,
-            "timestamp_end": 480,
-            "summary": "Important educational concepts are explained with practical examples and real-world applications."
-        })
-    elif content_type == "tutorial":
-        recaps.append({
-            "timestamp_start": 300,
-            "timestamp_end": 480,
-            "summary": "Step-by-step instructions are provided with detailed explanations and helpful tips."
-        })
-    
-    # Generate basic characters if it's likely to have people
-    characters = []
-    if any(word in title_lower for word in ['student', 'teacher', 'vs', 'people', 'guy', 'girl']):
-        if 'student' in title_lower and 'teacher' in title_lower:
-            characters = [
-                {"name": "Students", "role": "Main Participants", "description": "The students featured in this video", "importance": 1},
-                {"name": "Teachers", "role": "Authority Figures", "description": "The teachers or educators shown", "importance": 1}
-            ]
-        elif 'vs' in title_lower:
-            parts = video_title.split(' vs ')
-            if len(parts) >= 2:
-                characters = [
-                    {"name": parts[0].strip(), "role": "Competitor A", "description": f"One side of the comparison: {parts[0].strip()}", "importance": 1},
-                    {"name": parts[1].strip(), "role": "Competitor B", "description": f"The other side: {parts[1].strip()}", "importance": 1}
-                ]
-    
-    print(f"Generated enhanced content for '{video_title}' - {len(theme_alerts)} themes, {len(recaps)} recaps, {len(characters)} characters")
-    
-    return {
-        "briefing": briefing,
-        "theme_alerts": theme_alerts,
-        "recaps": recaps,
-        "characters": characters
-    }
-
 def add_to_history(user_id, video_id, video_title):
     """Add a watched video to user's history"""
     try:
@@ -596,14 +379,25 @@ def get_user_history(user_id):
         return []
 
 def get_video_id(url):
+    # Handle URLs without protocol
+    if not url.startswith(('http://', 'https://')):
+        url = 'https://' + url
+    
     parsed_url = urlparse(url)
+    
+    # Handle youtu.be URLs
     if parsed_url.hostname in ['youtu.be']:
         return parsed_url.path[1:]
+    
+    # Handle youtube.com URLs
     if parsed_url.hostname in ['www.youtube.com', 'youtube.com']:
+        # Standard watch URLs
         if parsed_url.path == '/watch':
             return parse_qs(parsed_url.query).get('v', [None])[0]
+        # Embed URLs
         if parsed_url.path.startswith('/embed/'):
             return parsed_url.path.split('/')[2]
+    
     return None
 
 def chunk_transcript(transcript, chunk_duration=150):
@@ -683,7 +477,7 @@ def get_gemini_response(transcript_chunks, complexity_score):
             {{
                 "name": "Character Name",
                 "role": "Their role or relationship to the story (e.g., 'Main protagonist', 'Love interest', 'Antagonist', 'Supporting character')",
-                "description": "Very brief description of the character (1-2 sentences maximum, focus on key traits or actions)",
+                "description": "Brief description of the character and their importance to the story",
                 "importance": 1
             }}
         ],
@@ -705,7 +499,7 @@ def get_gemini_response(transcript_chunks, complexity_score):
         "scenes": [
             {{
                 "scene_start": 0,
-                "scene_end": {scene_duration}
+                "scene_end": {scene_duration},
                 "scene_title": "Scene Title",
                 "what_happened": "A clear, concise answer to 'what just happened?' for this time period. Focus on the key events, actions, or information presented in this segment."
             }}
@@ -715,11 +509,9 @@ def get_gemini_response(transcript_chunks, complexity_score):
     IMPORTANT CHARACTER ANALYSIS: 
     - Identify the 3-6 most important characters that appear in this video
     - Focus on characters who are actively speaking, being discussed, or are central to the plot
-    - For each character, provide their name (as mentioned in the transcript), their role in the story, and a VERY BRIEF description (1-2 sentences maximum)
-    - Keep descriptions concise - focus only on the most essential traits or actions that help identify the character
+    - For each character, provide their name (as mentioned in the transcript), their role in the story, and a brief description
     - Rate importance from 1-3 (1 = most important/main characters, 2 = important supporting characters, 3 = minor but relevant characters)
     - Only include characters that are actually relevant to understanding this video content
-    - Descriptions should be short enough to fit in a compact table layout
 
     SCENES: Create a "scenes" array with exactly {len(scenes)} entries covering these time ranges:
     {scenes_json}
@@ -833,173 +625,18 @@ def update_complexity_score(user_id, click_count):
     conn.commit()
     conn.close()
 
-def get_transcript_with_ytdlp(video_id, video_url):
-    """Extract transcript using yt-dlp - more robust than YouTube Transcript API"""
-    try:
-        print(f"Attempting yt-dlp transcript extraction for: {video_id}")
-        
-        ydl_opts = {
-            'quiet': True,
-            'no_warnings': True,
-            'writesubtitles': True,
-            'writeautomaticsub': True,
-            'subtitleslangs': ['en', 'en-US', 'en-GB'],
-            'skip_download': True,  # Don't download video, just get metadata and subs
-        }
-        
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            try:
-                info = ydl.extract_info(video_url, download=False)
-                
-                # Check if subtitles are available
-                if 'subtitles' in info and info['subtitles']:
-                    print("Found manual subtitles")
-                    subs = info['subtitles']
-                elif 'automatic_captions' in info and info['automatic_captions']:
-                    print("Found automatic captions")
-                    subs = info['automatic_captions']
-                else:
-                    print("No subtitles found with yt-dlp")
-                    return None
-                
-                # Try to get English subtitles
-                subtitle_data = None
-                for lang in ['en', 'en-US', 'en-GB']:
-                    if lang in subs:
-                        # Get the first format available (usually vtt or json3)
-                        for format_info in subs[lang]:
-                            if format_info.get('ext') in ['vtt', 'json3', 'srv1', 'srv2', 'srv3']:
-                                subtitle_url = format_info.get('url')
-                                if subtitle_url:
-                                    print(f"Downloading {lang} subtitles in {format_info.get('ext')} format")
-                                    response = requests.get(subtitle_url, timeout=30)
-                                    if response.status_code == 200:
-                                        subtitle_data = response.text
-                                        subtitle_format = format_info.get('ext')
-                                        break
-                        if subtitle_data:
-                            break
-                
-                if not subtitle_data:
-                    print("Could not download subtitle content")
-                    return None
-                
-                # Parse the subtitle data based on format
-                transcript = parse_subtitle_content(subtitle_data, subtitle_format)
-                
-                if transcript and len(transcript) > 0:
-                    print(f"Successfully extracted {len(transcript)} transcript entries with yt-dlp")
-                    return transcript
-                else:
-                    print("No transcript content found after parsing")
-                    return None
-                    
-            except Exception as extract_error:
-                print(f"yt-dlp extraction failed: {str(extract_error)}")
-                return None
-                
-    except Exception as e:
-        print(f"yt-dlp transcript extraction error: {str(e)}")
-        return None
-
-def parse_subtitle_content(content, format_type):
-    """Parse subtitle content from different formats into transcript format"""
-    try:
-        import re
-        transcript = []
-        
-        if format_type == 'vtt':
-            # Parse WebVTT format
-            lines = content.split('\n')
-            for i, line in enumerate(lines):
-                if '-->' in line:
-                    # Parse timestamp line
-                    times = line.split(' --> ')
-                    if len(times) == 2:
-                        start_time = parse_vtt_timestamp(times[0].strip())
-                        end_time = parse_vtt_timestamp(times[1].strip())
-                        
-                        # Get text from next lines until empty line
-                        text_lines = []
-                        j = i + 1
-                        while j < len(lines) and lines[j].strip():
-                            # Remove VTT tags like <c> or <c.colorE5E5E5>
-                            clean_text = re.sub(r'<[^>]+>', '', lines[j])
-                            if clean_text.strip():
-                                text_lines.append(clean_text.strip())
-                            j += 1
-                        
-                        if text_lines:
-                            transcript.append({
-                                'start': start_time,
-                                'text': ' '.join(text_lines)
-                            })
-        
-        elif format_type in ['json3', 'srv1', 'srv2', 'srv3']:
-            # Parse JSON format
-            try:
-                import json
-                data = json.loads(content)
-                
-                if 'events' in data:
-                    # YouTube JSON3 format
-                    for event in data['events']:
-                        if 'segs' in event and event.get('tStartMs') is not None:
-                            start_time = event['tStartMs']
-                            text_parts = []
-                            for seg in event['segs']:
-                                if 'utf8' in seg:
-                                    text_parts.append(seg['utf8'])
-                            
-                            if text_parts:
-                                transcript.append({
-                                    'start': start_time,
-                                    'text': ''.join(text_parts).strip()
-                                })
-                
-            except json.JSONDecodeError:
-                print("Failed to parse JSON subtitle format")
-                return None
-        
-        print(f"Parsed {len(transcript)} entries from {format_type} subtitles")
-        return transcript if transcript else None
-        
-    except Exception as e:
-        print(f"Error parsing subtitle content: {str(e)}")
-        return None
-
-def parse_vtt_timestamp(timestamp):
-    """Convert VTT timestamp to milliseconds"""
-    try:
-        # Remove any extra formatting
-        timestamp = timestamp.split(' ')[0]  # Remove any extra data after space
-        
-        # Handle different timestamp formats
-        if timestamp.count(':') == 2:
-            # Format: HH:MM:SS.mmm
-            parts = timestamp.split(':')
-            hours = int(parts[0])
-            minutes = int(parts[1])
-            seconds_parts = parts[2].split('.')
-            seconds = int(seconds_parts[0])
-            milliseconds = int(seconds_parts[1]) if len(seconds_parts) > 1 else 0
-            
-            total_ms = (hours * 3600 + minutes * 60 + seconds) * 1000 + milliseconds
-            return total_ms
-        else:
-            # Try other formats
-            return 0
-    except:
-        return 0
-
 @app.route('/process_video', methods=['POST'])
 def process_video():
     conn = None
     try:
         print("=== STARTING VIDEO PROCESSING ===")
+        print(f"Request method: {request.method}")
+        print(f"Request headers: {dict(request.headers)}")
         
         # Validate request data
         data = request.get_json()
+        print(f"Received JSON data: {data}")
+        
         if not data:
             print("ERROR: No JSON data received")
             return jsonify({"error": "Invalid JSON data"}), 400
@@ -1007,19 +644,31 @@ def process_video():
         youtube_url = data.get('youtube_url')
         user_id = data.get('user_id', 'default_user')
         
-        print(f"Processing video URL: {youtube_url}")
+        print(f"Processing video URL: '{youtube_url}'")
+        print(f"URL type: {type(youtube_url)}")
+        print(f"URL length: {len(youtube_url) if youtube_url else 'None'}")
         print(f"User ID: {user_id}")
         
         if not youtube_url:
             print("ERROR: No YouTube URL provided")
             return jsonify({"error": "No YouTube URL provided"}), 400
 
+        # Test URL parsing with detailed debugging
+        print(f"Testing URL parsing for: {youtube_url}")
         video_id = get_video_id(youtube_url)
-        if not video_id:
-            print("ERROR: Invalid YouTube URL")
-            return jsonify({"error": "Invalid YouTube URL"}), 400
-
         print(f"Extracted video ID: {video_id}")
+        
+        if not video_id:
+            print("ERROR: Invalid YouTube URL - get_video_id returned None")
+            # Let's also test the URL parsing step by step
+            from urllib.parse import urlparse, parse_qs
+            parsed_url = urlparse(youtube_url)
+            print(f"Parsed URL hostname: {parsed_url.hostname}")
+            print(f"Parsed URL path: {parsed_url.path}")
+            print(f"Parsed URL query: {parsed_url.query}")
+            return jsonify({"error": "Invalid YouTube URL. Please use a valid YouTube URL like: https://www.youtube.com/watch?v=VIDEO_ID"}), 400
+
+        print(f"Successfully extracted video ID: {video_id}")
 
         # Initialize database connection
         conn = sqlite3.connect("cache.db")
@@ -1038,239 +687,88 @@ def process_video():
                     "recaps": json.loads(cached[2]) if cached[2] else [],
                     "characters": json.loads(cached[3]) if cached[3] else []
                 }
-                conn.close()
-                return jsonify(result)
-            except json.JSONDecodeError:
-                print("Cache is corrupted, continuing with fresh analysis")
-                pass
-
-        print("No cache found, proceeding with analysis...")
-
-        # Initialize the response structure
-        result = {
-            "briefing": "This video contains valuable content. AI analysis is being processed in the background.",
-            "characters": [],
-            "theme_alerts": [
-                {
-                    "timestamp": 30,
-                    "theme": "Content",
-                    "emotion": "Informative", 
-                    "description": "Key information is being presented"
-                },
-                {
-                    "timestamp": 120,
-                    "theme": "Learning",
-                    "emotion": "Educational",
-                    "description": "Important concepts are being explained"
-                }
-            ],
-            "recaps": [
-                {
-                    "timestamp_start": 0,
-                    "timestamp_end": 60,
-                    "summary": "The video begins with an introduction to the main topic."
-                },
-                {
-                    "timestamp_start": 60,
-                    "timestamp_end": 120,
-                    "summary": "Key concepts and explanations are presented."
-                }
-            ]
-        }
-
-        # Try to get transcript for enhanced analysis
-        try:
-            print(f"Fetching transcript for video: {video_id}")
-            
-            # First try yt-dlp for more robust transcript extraction
-            transcript = get_transcript_with_ytdlp(video_id, youtube_url)
-            
-            if not transcript:
-                # Fallback to YouTube Transcript API
-                print("Trying YouTube Transcript API as fallback...")
-                languages_to_try = ['en', 'en-US', 'en-GB', 'auto']
                 
-                for lang in languages_to_try:
-                    try:
-                        if lang == 'auto':
-                            transcript = YouTubeTranscriptApi.get_transcript(video_id)
-                        else:
-                            transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=[lang])
-                        
-                        if transcript:
-                            print(f"Transcript fetched successfully in {lang}, {len(transcript)} entries")
-                            break
-                            
-                    except Exception as lang_error:
-                        print(f"Failed to fetch transcript in {lang}: {str(lang_error)}")
-                        continue
-            
-            if transcript:
-                transcript_chunks = chunk_transcript(transcript)
-                print(f"Transcript processed into {len(transcript_chunks)} chunks")
-                
-                # Get complexity score for the user
-                cursor.execute("SELECT complexity_score FROM user_complexity WHERE user_id = ?", (user_id,))
-                score = cursor.fetchone()
-                complexity_score = score[0] if score else 1.0
-                print(f"User complexity score: {complexity_score}")
-                
-                # Try Gemini analysis - THIS IS THE CRITICAL PART
-                print("=== CALLING GEMINI API ===")
-                gemini_response = get_gemini_response(transcript_chunks, complexity_score)
-                print(f"Gemini response received, type: {type(gemini_response)}")
-                
-                if isinstance(gemini_response, dict) and 'error' in gemini_response:
-                    print(f"Gemini API returned error: {gemini_response['error']}")
-                    print("Using enhanced fallback data due to API error")
-                elif isinstance(gemini_response, str):
-                    print("Processing Gemini response...")
-                    # Try to parse Gemini response
-                    cleaned_response = gemini_response.strip()
-                    if cleaned_response.startswith('```json'):
-                        cleaned_response = cleaned_response[7:]
-                    if cleaned_response.endswith('```'):
-                        cleaned_response = cleaned_response[:-3]
-                    cleaned_response = cleaned_response.strip()
-                    
-                    print(f"Cleaned response (first 200 chars): {cleaned_response[:200]}")
-                    
-                    try:
-                        gemini_result = json.loads(cleaned_response)
-                        print("Successfully parsed Gemini response!")
-                        
-                        # Update the result with Gemini data
-                        if gemini_result.get('briefing'):
-                            result['briefing'] = gemini_result.get('briefing')
-                            print(f"Updated briefing: {result['briefing'][:100]}...")
-                        if gemini_result.get('theme_alerts'):
-                            result['theme_alerts'] = gemini_result.get('theme_alerts')
-                            print(f"Updated theme_alerts: {len(result['theme_alerts'])} alerts")
-                        if gemini_result.get('recaps'):
-                            result['recaps'] = gemini_result.get('recaps')
-                            print(f"Updated recaps: {len(result['recaps'])} recaps")
-                        
-                        # Store character information
-                        if gemini_result.get('characters'):
-                            characters = gemini_result.get('characters')
-                            result['characters'] = characters
-                            print(f"Processing {len(characters)} characters for storage...")
-                            
-                            # Clear existing characters for this video
-                            cursor.execute("DELETE FROM video_characters WHERE video_id = ?", (video_id,))
-                            
-                            # Store each character
-                            for character in characters:
-                                character_name = character.get('name', 'Unknown Character')
-                                character_role = character.get('role', 'Unknown Role')
-                                character_description = character.get('description', 'No description available')
-                                importance_level = character.get('importance', 1)
-                                
-                                cursor.execute("""
-                                    INSERT INTO video_characters (video_id, character_name, character_role, character_description, importance_level)
-                                    VALUES (?, ?, ?, ?, ?)
-                                """, (video_id, character_name, character_role, character_description, importance_level))
-                            
-                            print(f"Successfully stored {len(characters)} characters in database")
-                        else:
-                            print("No characters found in Gemini response")
-                            result['characters'] = []
-                        
-                        # Store scene summaries for "what just happened" feature
-                        if gemini_result.get('scenes'):
-                            scenes = gemini_result.get('scenes')
-                            print(f"Processing {len(scenes)} scenes for storage...")
-                            
-                            # Clear existing scenes for this video
-                            cursor.execute("DELETE FROM video_scenes WHERE video_id = ?", (video_id,))
-                            
-                            # Store each scene
-                            for scene in scenes:
-                                scene_start = scene.get('scene_start', 0)
-                                scene_end = scene.get('scene_end', 0)
-                                scene_title = scene.get('scene_title', 'Scene')
-                                what_happened = scene.get('what_happened', 'Scene information not available')
-
-                                cursor.execute("""
-                                    INSERT INTO video_scenes (video_id, scene_start, scene_end, what_happened, scene_title)
-                                    VALUES (?, ?, ?, ?, ?)
-                                """, (video_id, scene_start, scene_end, what_happened, scene_title))
-                            
-                            print(f"Successfully stored {len(scenes)} scenes in database")
-                        else:
-                            print("No scenes found in Gemini response")
-                            
-                        print("=== GEMINI RESPONSE SUCCESSFULLY INTEGRATED ===")
-                        
-                    except json.JSONDecodeError as json_error:
-                        print(f"Could not parse Gemini response as JSON: {json_error}")
-                        print(f"Raw response (first 500 chars): {cleaned_response[:500]}")
-                        print("Using enhanced fallback data due to JSON parsing error")
-                else:
-                    print(f"Unexpected Gemini response type: {type(gemini_response)}")
-                    print("Using enhanced fallback data due to unexpected response format")
-            else:
-                print("No transcript available in any language - generating content from video title")
-                # Generate enhanced content based on video title
+                # Add to history
                 video_title = get_youtube_video_title(video_id)
-                result = generate_content_from_title(video_title, video_id)
+                add_to_history(user_id, video_id, video_title)
                 
-        except (TranscriptsDisabled, NoTranscriptFound) as transcript_error:
-            print(f"Transcript unavailable for video: {video_id} - {str(transcript_error)}")
-            print("Generating enhanced content from video title instead")
-            video_title = get_youtube_video_title(video_id)
-            result = generate_content_from_title(video_title, video_id)
-        except Exception as e:
-            print(f"Transcript fetch error: {str(e)}")
-            print("Generating enhanced content from video title instead")
-            video_title = get_youtube_video_title(video_id)
-            result = generate_content_from_title(video_title, video_id)
-
-        # Save to cache
-        try:
-            print("Saving result to cache...")
-            cursor.execute("""
-                INSERT OR REPLACE INTO video_cache (video_id, briefing, theme_alerts, recaps, characters)
-                VALUES (?, ?, ?, ?, ?)
-            """, (video_id, result["briefing"], json.dumps(result["theme_alerts"]), json.dumps(result["recaps"]), json.dumps(result.get("characters", []))))
-            conn.commit()
-            print("Cache saved successfully")
-        except Exception as e:
-            print(f"Cache save error: {str(e)}")
-
-        # Add to user history
-        try:
-            print("Adding to user history...")
-            user_id = data.get('user_id', 'default_user')
-            video_title = get_youtube_video_title(video_id)
-            add_to_history(user_id, video_id, video_title)
-            print("History updated successfully")
-        except Exception as e:
-            print(f"History save error: {str(e)}")
-
-        if conn:
-            conn.close()
-
-        print("=== RETURNING FINAL RESULT ===")
-        print(f"Final briefing: {result['briefing'][:100]}...")
-        print(f"Final theme_alerts count: {len(result['theme_alerts'])}")
-        print(f"Final recaps count: {len(result['recaps'])}")
+                return jsonify(result)
+            except Exception as e:
+                print(f"Error parsing cached data: {e}")
+                # Continue to process video if cache is corrupted
         
-        return jsonify(result)
+        # Get user complexity score
+        cursor.execute("SELECT complexity_score FROM user_complexity WHERE user_id = ?", (user_id,))
+        score = cursor.fetchone()
+        complexity_score = score[0] if score else 1.0
+        
+        print(f"User complexity score: {complexity_score}")
+        
+        # Fetch transcript
+        print("Fetching transcript...")
+        try:
+            transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
+            print(f"Transcript fetched successfully. {len(transcript_list)} entries")
+        except TranscriptsDisabled:
+            print("ERROR: Transcripts disabled for this video")
+            return jsonify({"error": "Transcripts are disabled for this video"}), 400
+        except NoTranscriptFound:
+            print("ERROR: No transcript found")
+            return jsonify({"error": "No transcript found for this video"}), 400
+        except Exception as e:
+            print(f"ERROR: Transcript fetch failed: {e}")
+            return jsonify({"error": f"Failed to fetch transcript: {str(e)}"}), 400
+        
+        # Process transcript
+        print("Processing transcript...")
+        chunked_transcript = chunk_transcript(transcript_list)
+        print(f"Transcript chunked into {len(chunked_transcript)} chunks")
+        
+        # Call Gemini API
+        print("Calling Gemini API...")
+        gemini_response = get_gemini_response(chunked_transcript, complexity_score)
+        
+        if isinstance(gemini_response, dict) and 'error' in gemini_response:
+            print(f"ERROR: Gemini API call failed: {gemini_response['error']}")
+            return jsonify(gemini_response), 500
+        
+        print("Gemini API call successful")
+        
+        # Cache the response
+        print("Caching response...")
+        cursor.execute("""
+            INSERT OR REPLACE INTO video_cache 
+            (video_id, briefing, theme_alerts, recaps, characters, rating, complexity) 
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (
+            video_id,
+            gemini_response.get('briefing', ''),
+            json.dumps(gemini_response.get('theme_alerts', [])),
+            json.dumps(gemini_response.get('recaps', [])),
+            json.dumps(gemini_response.get('characters', [])),
+            gemini_response.get('rating', ''),
+            gemini_response.get('complexity', '')
+        ))
+        
+        conn.commit()
+        print("Response cached successfully")
+        
+        # Add to history
+        video_title = get_youtube_video_title(video_id)
+        add_to_history(user_id, video_id, video_title)
+        
+        return jsonify(gemini_response)
         
     except Exception as e:
-        print(f"=== UNEXPECTED ERROR IN PROCESS_VIDEO ===")
-        print(f"Error: {str(e)}")
+        print(f"CRITICAL ERROR in process_video: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": f"Internal server error: {str(e)}"}), 500
+    
+    finally:
         if conn:
             conn.close()
-
-        # Return a basic fallback response
-        return jsonify({
-            "briefing": "Video analysis completed. Enjoy watching!",
-            "characters": [],
-            "theme_alerts": [],
-            "recaps": []
-        })
+            print("Database connection closed")
 
 @app.route('/update_clicks', methods=['POST'])
 def update_clicks():
@@ -1585,96 +1083,5 @@ def what_happened():
             "what_happened": "Unable to retrieve scene information at this time."
         })
 
-# Health check endpoint for deployment
-@app.route('/health', methods=['GET'])
-def health_check():
-    """Health check endpoint for deployment platforms"""
-    return jsonify({
-        "status": "healthy",
-        "message": "Klarity API is running",
-        "gemini_configured": bool(GEMINI_API_KEY)
-    }), 200
-
-# Authentication endpoints
-@app.route('/signup', methods=['POST'])
-def signup():
-    """Create a new user account"""
-    try:
-        data = request.get_json()
-        if not data:
-            return jsonify({"error": "Invalid JSON data"}), 400
-        
-        username = data.get('username', '').strip()
-        password = data.get('password', '')
-        
-        if not username or not password:
-            return jsonify({"error": "Username and password are required"}), 400
-        
-        if len(username) < 3:
-            return jsonify({"error": "Username must be at least 3 characters"}), 400
-        
-        if len(password) < 6:
-            return jsonify({"error": "Password must be at least 6 characters"}), 400
-        
-        # Create user
-        success, result = create_user(username, password)
-        
-        if success:
-            return jsonify({
-                "success": True,
-                "message": "Account created successfully",
-                "user": {
-                    "id": result,
-                    "username": username
-                }
-            }), 201
-        else:
-            return jsonify({"error": result}), 400
-    
-    except Exception as e:
-        print(f"Error in signup: {str(e)}")
-        return jsonify({"error": "Internal server error"}), 500
-
-@app.route('/login', methods=['POST'])
-def login():
-    """Authenticate user login"""
-    try:
-        data = request.get_json()
-        if not data:
-            return jsonify({"error": "Invalid JSON data"}), 400
-        
-        username = data.get('username', '').strip()
-        password = data.get('password', '')
-        
-        if not username or not password:
-            return jsonify({"error": "Username and password are required"}), 400
-        
-        # Authenticate user
-        success, result = authenticate_user(username, password)
-        
-        if success:
-            return jsonify({
-                "success": True,
-                "message": "Login successful",
-                "user": result
-            }), 200
-        else:
-            return jsonify({"error": result}), 401
-    
-    except Exception as e:
-        print(f"Error in login: {str(e)}")
-        return jsonify({"error": "Internal server error"}), 500
-
-@app.route('/logout', methods=['POST'])
-def logout():
-    """Log out user (client-side will handle clearing session)"""
-    return jsonify({
-        "success": True,
-        "message": "Logout successful"
-    }), 200
-
 if __name__ == '__main__':
-    # Use environment variables for production deployment
-    port = int(os.environ.get('PORT', 5000))
-    debug = os.environ.get('FLASK_ENV') != 'production'
-    app.run(debug=debug, host='0.0.0.0', port=port)
+    app.run(debug=True, host='0.0.0.0', port=5000)
