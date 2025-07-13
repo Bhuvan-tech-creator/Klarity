@@ -9,6 +9,9 @@ import json
 from urllib.parse import urlparse, parse_qs
 import bcrypt
 import datetime
+import yt_dlp
+import tempfile
+import subprocess
 
 app = Flask(__name__)
 
@@ -830,6 +833,165 @@ def update_complexity_score(user_id, click_count):
     conn.commit()
     conn.close()
 
+def get_transcript_with_ytdlp(video_id, video_url):
+    """Extract transcript using yt-dlp - more robust than YouTube Transcript API"""
+    try:
+        print(f"Attempting yt-dlp transcript extraction for: {video_id}")
+        
+        ydl_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'writesubtitles': True,
+            'writeautomaticsub': True,
+            'subtitleslangs': ['en', 'en-US', 'en-GB'],
+            'skip_download': True,  # Don't download video, just get metadata and subs
+        }
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            try:
+                info = ydl.extract_info(video_url, download=False)
+                
+                # Check if subtitles are available
+                if 'subtitles' in info and info['subtitles']:
+                    print("Found manual subtitles")
+                    subs = info['subtitles']
+                elif 'automatic_captions' in info and info['automatic_captions']:
+                    print("Found automatic captions")
+                    subs = info['automatic_captions']
+                else:
+                    print("No subtitles found with yt-dlp")
+                    return None
+                
+                # Try to get English subtitles
+                subtitle_data = None
+                for lang in ['en', 'en-US', 'en-GB']:
+                    if lang in subs:
+                        # Get the first format available (usually vtt or json3)
+                        for format_info in subs[lang]:
+                            if format_info.get('ext') in ['vtt', 'json3', 'srv1', 'srv2', 'srv3']:
+                                subtitle_url = format_info.get('url')
+                                if subtitle_url:
+                                    print(f"Downloading {lang} subtitles in {format_info.get('ext')} format")
+                                    response = requests.get(subtitle_url, timeout=30)
+                                    if response.status_code == 200:
+                                        subtitle_data = response.text
+                                        subtitle_format = format_info.get('ext')
+                                        break
+                        if subtitle_data:
+                            break
+                
+                if not subtitle_data:
+                    print("Could not download subtitle content")
+                    return None
+                
+                # Parse the subtitle data based on format
+                transcript = parse_subtitle_content(subtitle_data, subtitle_format)
+                
+                if transcript and len(transcript) > 0:
+                    print(f"Successfully extracted {len(transcript)} transcript entries with yt-dlp")
+                    return transcript
+                else:
+                    print("No transcript content found after parsing")
+                    return None
+                    
+            except Exception as extract_error:
+                print(f"yt-dlp extraction failed: {str(extract_error)}")
+                return None
+                
+    except Exception as e:
+        print(f"yt-dlp transcript extraction error: {str(e)}")
+        return None
+
+def parse_subtitle_content(content, format_type):
+    """Parse subtitle content from different formats into transcript format"""
+    try:
+        import re
+        transcript = []
+        
+        if format_type == 'vtt':
+            # Parse WebVTT format
+            lines = content.split('\n')
+            for i, line in enumerate(lines):
+                if '-->' in line:
+                    # Parse timestamp line
+                    times = line.split(' --> ')
+                    if len(times) == 2:
+                        start_time = parse_vtt_timestamp(times[0].strip())
+                        end_time = parse_vtt_timestamp(times[1].strip())
+                        
+                        # Get text from next lines until empty line
+                        text_lines = []
+                        j = i + 1
+                        while j < len(lines) and lines[j].strip():
+                            # Remove VTT tags like <c> or <c.colorE5E5E5>
+                            clean_text = re.sub(r'<[^>]+>', '', lines[j])
+                            if clean_text.strip():
+                                text_lines.append(clean_text.strip())
+                            j += 1
+                        
+                        if text_lines:
+                            transcript.append({
+                                'start': start_time,
+                                'text': ' '.join(text_lines)
+                            })
+        
+        elif format_type in ['json3', 'srv1', 'srv2', 'srv3']:
+            # Parse JSON format
+            try:
+                import json
+                data = json.loads(content)
+                
+                if 'events' in data:
+                    # YouTube JSON3 format
+                    for event in data['events']:
+                        if 'segs' in event and event.get('tStartMs') is not None:
+                            start_time = event['tStartMs']
+                            text_parts = []
+                            for seg in event['segs']:
+                                if 'utf8' in seg:
+                                    text_parts.append(seg['utf8'])
+                            
+                            if text_parts:
+                                transcript.append({
+                                    'start': start_time,
+                                    'text': ''.join(text_parts).strip()
+                                })
+                
+            except json.JSONDecodeError:
+                print("Failed to parse JSON subtitle format")
+                return None
+        
+        print(f"Parsed {len(transcript)} entries from {format_type} subtitles")
+        return transcript if transcript else None
+        
+    except Exception as e:
+        print(f"Error parsing subtitle content: {str(e)}")
+        return None
+
+def parse_vtt_timestamp(timestamp):
+    """Convert VTT timestamp to milliseconds"""
+    try:
+        # Remove any extra formatting
+        timestamp = timestamp.split(' ')[0]  # Remove any extra data after space
+        
+        # Handle different timestamp formats
+        if timestamp.count(':') == 2:
+            # Format: HH:MM:SS.mmm
+            parts = timestamp.split(':')
+            hours = int(parts[0])
+            minutes = int(parts[1])
+            seconds_parts = parts[2].split('.')
+            seconds = int(seconds_parts[0])
+            milliseconds = int(seconds_parts[1]) if len(seconds_parts) > 1 else 0
+            
+            total_ms = (hours * 3600 + minutes * 60 + seconds) * 1000 + milliseconds
+            return total_ms
+        else:
+            # Try other formats
+            return 0
+    except:
+        return 0
+
 @app.route('/process_video', methods=['POST'])
 def process_video():
     conn = None
@@ -920,25 +1082,28 @@ def process_video():
         try:
             print(f"Fetching transcript for video: {video_id}")
             
-            # Try multiple language options and methods
-            transcript = None
-            languages_to_try = ['en', 'en-US', 'en-GB', 'auto']
+            # First try yt-dlp for more robust transcript extraction
+            transcript = get_transcript_with_ytdlp(video_id, youtube_url)
             
-            for lang in languages_to_try:
-                try:
-                    if lang == 'auto':
-                        # Try auto-generated captions
-                        transcript = YouTubeTranscriptApi.get_transcript(video_id)
-                    else:
-                        transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=[lang])
-                    
-                    if transcript:
-                        print(f"Transcript fetched successfully in {lang}, {len(transcript)} entries")
-                        break
+            if not transcript:
+                # Fallback to YouTube Transcript API
+                print("Trying YouTube Transcript API as fallback...")
+                languages_to_try = ['en', 'en-US', 'en-GB', 'auto']
+                
+                for lang in languages_to_try:
+                    try:
+                        if lang == 'auto':
+                            transcript = YouTubeTranscriptApi.get_transcript(video_id)
+                        else:
+                            transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=[lang])
                         
-                except Exception as lang_error:
-                    print(f"Failed to fetch transcript in {lang}: {str(lang_error)}")
-                    continue
+                        if transcript:
+                            print(f"Transcript fetched successfully in {lang}, {len(transcript)} entries")
+                            break
+                            
+                    except Exception as lang_error:
+                        print(f"Failed to fetch transcript in {lang}: {str(lang_error)}")
+                        continue
             
             if transcript:
                 transcript_chunks = chunk_transcript(transcript)
