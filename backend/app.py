@@ -7,6 +7,8 @@ import os
 import sqlite3
 import json
 from urllib.parse import urlparse, parse_qs
+import bcrypt
+import datetime
 
 app = Flask(__name__)
 
@@ -151,6 +153,17 @@ def init_db():
     conn = sqlite3.connect("cache.db")
     cursor = conn.cursor()
     
+    # Create users table for authentication
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_login TIMESTAMP
+        )
+    """)
+    
     # Create user_complexity table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS user_complexity (
@@ -236,6 +249,87 @@ def init_db():
     conn.close()
 
 init_db()
+
+# Authentication helper functions
+def hash_password(password):
+    """Hash a password using bcrypt"""
+    return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
+
+def verify_password(password, hashed):
+    """Verify a password against its hash"""
+    return bcrypt.checkpw(password.encode('utf-8'), hashed)
+
+def create_user(username, password):
+    """Create a new user account"""
+    conn = sqlite3.connect("cache.db")
+    cursor = conn.cursor()
+    
+    try:
+        # Check if username already exists
+        cursor.execute("SELECT id FROM users WHERE username = ?", (username,))
+        if cursor.fetchone():
+            conn.close()
+            return False, "Username already exists"
+        
+        # Hash the password
+        password_hash = hash_password(password)
+        
+        # Insert new user
+        cursor.execute("""
+            INSERT INTO users (username, password_hash) 
+            VALUES (?, ?)
+        """, (username, password_hash))
+        
+        user_id = cursor.lastrowid
+        
+        # Initialize user complexity score
+        cursor.execute("""
+            INSERT INTO user_complexity (user_id, clicks, complexity_score) 
+            VALUES (?, 0, 1.0)
+        """, (str(user_id),))
+        
+        conn.commit()
+        conn.close()
+        return True, user_id
+    
+    except Exception as e:
+        conn.close()
+        return False, str(e)
+
+def authenticate_user(username, password):
+    """Authenticate a user and return user info"""
+    conn = sqlite3.connect("cache.db")
+    cursor = conn.cursor()
+    
+    try:
+        # Get user data
+        cursor.execute("SELECT id, username, password_hash FROM users WHERE username = ?", (username,))
+        user = cursor.fetchone()
+        
+        if not user:
+            conn.close()
+            return False, "User not found"
+        
+        user_id, username, password_hash = user
+        
+        # Verify password
+        if verify_password(password, password_hash):
+            # Update last login
+            cursor.execute("UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = ?", (user_id,))
+            conn.commit()
+            conn.close()
+            
+            return True, {
+                "id": user_id,
+                "username": username
+            }
+        else:
+            conn.close()
+            return False, "Invalid password"
+    
+    except Exception as e:
+        conn.close()
+        return False, str(e)
 
 def get_youtube_video_title(video_id):
     """Fetch video title from YouTube with caching and fallback"""
@@ -1187,6 +1281,84 @@ def health_check():
         "status": "healthy",
         "message": "Klarity API is running",
         "gemini_configured": bool(GEMINI_API_KEY)
+    }), 200
+
+# Authentication endpoints
+@app.route('/signup', methods=['POST'])
+def signup():
+    """Create a new user account"""
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "Invalid JSON data"}), 400
+        
+        username = data.get('username', '').strip()
+        password = data.get('password', '')
+        
+        if not username or not password:
+            return jsonify({"error": "Username and password are required"}), 400
+        
+        if len(username) < 3:
+            return jsonify({"error": "Username must be at least 3 characters"}), 400
+        
+        if len(password) < 6:
+            return jsonify({"error": "Password must be at least 6 characters"}), 400
+        
+        # Create user
+        success, result = create_user(username, password)
+        
+        if success:
+            return jsonify({
+                "success": True,
+                "message": "Account created successfully",
+                "user": {
+                    "id": result,
+                    "username": username
+                }
+            }), 201
+        else:
+            return jsonify({"error": result}), 400
+    
+    except Exception as e:
+        print(f"Error in signup: {str(e)}")
+        return jsonify({"error": "Internal server error"}), 500
+
+@app.route('/login', methods=['POST'])
+def login():
+    """Authenticate user login"""
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "Invalid JSON data"}), 400
+        
+        username = data.get('username', '').strip()
+        password = data.get('password', '')
+        
+        if not username or not password:
+            return jsonify({"error": "Username and password are required"}), 400
+        
+        # Authenticate user
+        success, result = authenticate_user(username, password)
+        
+        if success:
+            return jsonify({
+                "success": True,
+                "message": "Login successful",
+                "user": result
+            }), 200
+        else:
+            return jsonify({"error": result}), 401
+    
+    except Exception as e:
+        print(f"Error in login: {str(e)}")
+        return jsonify({"error": "Internal server error"}), 500
+
+@app.route('/logout', methods=['POST'])
+def logout():
+    """Log out user (client-side will handle clearing session)"""
+    return jsonify({
+        "success": True,
+        "message": "Logout successful"
     }), 200
 
 if __name__ == '__main__':
